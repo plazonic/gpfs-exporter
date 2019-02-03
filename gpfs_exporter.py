@@ -1,16 +1,10 @@
 #!/usr/bin/python2.7
-import pwd
-import getpass
 import os
-import re
 import sys
 import time
 import socket
-import logging
+import http.server
 from subprocess import (PIPE, STDOUT, Popen, CalledProcessError)
-from optparse import OptionParser
-from BaseHTTPServer import BaseHTTPRequestHandler, HTTPServer
-import SocketServer
 
 stat_mapping = {
   '_br_': {
@@ -105,42 +99,59 @@ def print_prom_stats(stats):
     for i in get_prom_stats(stats):
         print i
 
-class S(BaseHTTPRequestHandler):
+def get_systemd_socket():
+    SYSTEMD_FIRST_SOCKET_FD = 3
+    socket_type = http.server.HTTPServer.socket_type
+    address_family = http.server.HTTPServer.address_family
+    return socket.fromfd(SYSTEMD_FIRST_SOCKET_FD, address_family, socket_type)
+
+class RequestHandler(http.server.BaseHTTPRequestHandler):
     def _set_headers(self):
         self.send_response(200)
         self.send_header('Content-type', 'text/plain')
         self.end_headers()
 
-    def do_GET(self):
-        self._set_headers()
-        for i in get_prom_stats(get_stats()):
-            self.wfile.write(i+'\n')
-
     def do_HEAD(self):
         self._set_headers()
 
-    def do_POST(self):
-        # Doesn't do anything with posted data
+    def do_GET(self):
         self._set_headers()
-        for i in get_prom_stats(get_stats()):
-            self.wfile.write(i+'\n')
+        for l in get_prom_stats(stats):
+            self.wfile.write(l + '\n')
+        return
+    do_POST = do_GET
 
-def run(server_class=HTTPServer, handler_class=S, port=9001, address=''):
-    server_address = (address, port)
-    httpd = server_class(server_address, handler_class)
-    print 'Starting httpd...'
-    httpd.serve_forever()
+class SockInheritHTTPServer(http.server.HTTPServer):
+    def __init__(self, address_info, handler, bind_and_activate=True):
+        # Note that we call it with bind_and_activate = False.
+        http.server.HTTPServer.__init__(self,
+                                        address_info,
+                                        handler,
+                                        bind_and_activate=False)
 
+        # The socket from systemd needs to be set AFTER calling the parent's
+        # class's constructor, otherwise HTTPServer.__init__() will re-set
+        # self.socket() and the handover won't work.
+        self.socket = get_systemd_socket()
 
-parser = OptionParser()
-parser.add_option("-p", "--prometheus", action="store_true", dest="prometheus_out",
-                  default=False, help="output on stdout format compatible with prometheus")
-parser.add_option("-P", "--port", dest="port", default=9001, help="TCP Port, defaults to 9001")
-parser.add_option("-A", "--address", dest="address", default="0.0.0.0", help="TCP IP Address, defaults to 0.0.0.0")
-(options, args) = parser.parse_args()
+        if bind_and_activate:
+            self.server_activate()
 
-if options.prometheus_out:
-    all_hosts = get_stats()
-    print_prom_stats(all_hosts)
-else:
-    run(port=int(options.port), address=options.address)
+def wait_loop(delay=60):
+    # The connection/port/host doesn't really matter as we don't allocate the
+    # socket ourselves. Pass it in as localhost:80
+    httpserv = SockInheritHTTPServer(('localhost', 80), RequestHandler)
+    httpserv.timeout = 1
+    start = time.monotonic()
+    end = start + delay
+    while time.monotonic() < end:
+        httpserv.handle_request()
+    httpserv.server_close()
+
+if __name__ == "__main__":
+    if os.environ.get('LISTEN_PID', None) == str(os.getpid()):
+        wait_loop()
+        print("Done serving, shutting down")
+        sys.exit()
+    else:
+        raise SystemExit("This server should only run from systemd")
