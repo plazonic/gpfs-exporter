@@ -1,4 +1,4 @@
-#!/usr/bin/python2.7
+#!/usr/bin/python3.6
 import os
 import sys
 import time
@@ -52,7 +52,7 @@ def get_stats():
     # results will go into a hash
     per_host = {}
     # mmpmon needs input file, for simplicity we give it on stdin
-    inputscript = """
+    inputscript = b"""
        once nlist add *
        fs_io_s
     """
@@ -66,10 +66,10 @@ def get_stats():
     retcode = process.poll()
     if retcode:
         raise CalledProcessError(retcode, '/usr/lpp/mmfs/bin/mmpmon', output=output)
-    for l in all_stats.split('\n'):
+    for l in all_stats.decode().split('\n'):
         if l.startswith('_fs_io_s_'):
             # _fs_io_s_ _n_ 172.29.22.78 _nn_ tiger-i23g14-op0 _rc_ 0 _t_ 1536005985 _tu_ 350611 _cl_ tiger2.gpfs _fs_ tiger2.gpfs _d_ 32 _br_ 3401130516933 _bw_ 525742920053 _oc_ 14848149 _cc_ 10894911 _rdc_ 1776360 _wc_ 5527815 _dir_ 37573 _iu_ 11739978
-            d = dict(map(None, *[iter(l.split(' ')[1:])]*2))
+            d = dict(zip(*[iter(l.split(' ')[1:])]*2))
             if '_t_' in d and '_tu_' in d:
               d['t_microseconds'] = '%s%06d' %(d['_t_'], int(d['_tu_']))
               d['t_miliseconds'] = d['t_microseconds'][0:-3]
@@ -97,7 +97,7 @@ def get_prom_stats(stats):
 
 def print_prom_stats(stats):
     for i in get_prom_stats(stats):
-        print i
+        print(i)
 
 def get_systemd_socket():
     SYSTEMD_FIRST_SOCKET_FD = 3
@@ -116,8 +116,8 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self):
         self._set_headers()
-        for l in get_prom_stats(stats):
-            self.wfile.write(l + '\n')
+        for l in get_prom_stats(get_stats()):
+            self.wfile.write(str.encode(l + '\n'))
         return
     do_POST = do_GET
 
@@ -134,24 +134,21 @@ class SockInheritHTTPServer(http.server.HTTPServer):
         # self.socket() and the handover won't work.
         self.socket = get_systemd_socket()
 
-        if bind_and_activate:
-            self.server_activate()
-
-def wait_loop(delay=60):
+def wait_loop(serve=12):
     # The connection/port/host doesn't really matter as we don't allocate the
-    # socket ourselves. Pass it in as localhost:80
-    httpserv = SockInheritHTTPServer(('localhost', 80), RequestHandler)
-    httpserv.timeout = 1
-    start = time.monotonic()
-    end = start + delay
-    while time.monotonic() < end:
+    # socket ourselves.
+    httpserv = SockInheritHTTPServer(('127.0.0.1', 8123), RequestHandler)
+    httpserv.timeout = 10
+    start = 0
+    while start < serve:
         httpserv.handle_request()
+        start += 1
     httpserv.server_close()
 
 if __name__ == "__main__":
-    if os.environ.get('LISTEN_PID', None) == str(os.getpid()):
+    fds = os.environ.get("LISTEN_FDS", None)
+    if fds != None:
         wait_loop()
-        print("Done serving, shutting down")
         sys.exit()
     else:
         raise SystemExit("This server should only run from systemd")
