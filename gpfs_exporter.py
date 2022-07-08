@@ -4,7 +4,8 @@ import sys
 import time
 import socket
 import http.server
-from subprocess import (PIPE, STDOUT, Popen, CalledProcessError)
+import re
+from subprocess import (PIPE, STDOUT, Popen, CalledProcessError, check_output)
 
 stat_mapping = {
   '_br_': {
@@ -48,6 +49,45 @@ stat_mapping = {
     'type': 'counter'
   },
 }
+
+# {'name': 'system', 'id': '0', 'blksize': '4 MB', 'data': 'yes', 'meta': 'yes', 'total_data': '129030701056', 'free_data': '33869172736', 'free_data_percent': '26', 'total_meta': '129030701056', 'free_meta': '38223740928'}
+pool_mapping = {
+  'total_data': {
+    'name': 'gpfs_pool_data_size_bytes',
+    'description': 'GPFS Pool Data Total Size',
+    'type': 'gauge'
+  },
+  'free_data': {
+    'name': 'gpfs_pool_data_free_bytes',
+    'description': 'GPFS Pool Data Free Size',
+    'type': 'gauge'
+  },
+  'total_meta': {
+    'name': 'gpfs_pool_meta_size_bytes',
+    'description': 'GPFS Pool Meta Total Size',
+    'type': 'gauge'
+  },
+  'free_meta': {
+    'name': 'gpfs_pool_meta_free_bytes',
+    'description': 'GPFS Pool Meta Free Size',
+    'type': 'gauge'
+  },
+}
+# used to map data,meta in that order
+pool_type = {
+  'yes': {
+    'yes': 'data,meta',
+    'no': 'data',
+  },
+  'no': {
+    'yes': 'meta',
+    'no': '',
+  }
+}
+
+
+DEVNULL = open(os.devnull, 'w')
+
 def get_stats():
     # results will go into a hash
     per_host = {}
@@ -65,7 +105,9 @@ def get_stats():
         raise
     retcode = process.poll()
     if retcode:
-        raise CalledProcessError(retcode, '/usr/lpp/mmfs/bin/mmpmon', output=output)
+        raise CalledProcessError(retcode, '/usr/lpp/mmfs/bin/mmpmon', output=all_stats)
+    local_fs = []
+    pool_stats = {}
     for l in all_stats.decode().split('\n'):
         if l.startswith('_fs_io_s_'):
             # _fs_io_s_ _n_ 172.29.22.78 _nn_ tiger-i23g14-op0 _rc_ 0 _t_ 1536005985 _tu_ 350611 _cl_ tiger2.gpfs _fs_ tiger2.gpfs _d_ 32 _br_ 3401130516933 _bw_ 525742920053 _oc_ 14848149 _cc_ 10894911 _rdc_ 1776360 _wc_ 5527815 _dir_ 37573 _iu_ 11739978
@@ -79,24 +121,52 @@ def get_stats():
             n = n.replace('-op0', '')
             if n not in per_host:
                 per_host[n] = {}
-            per_host[n][d['_fs_']] = d
-    return per_host
+            fs = d['_fs_']
+            per_host[n][fs] = d
+            if '_tigress' not in fs and '_projects' not in fs and fs not in local_fs:
+                local_fs += [fs]
+    if local_fs:
+        # example data line
+        # Name                    Id   BlkSize Data Meta Total Data in (KB)   Free Data in (KB)   Total Meta in (KB)    Free Meta in (KB)
+        # system                   0      4 MB  yes  yes   129030701056    33869172736 ( 26%)   129030701056    38223740928 ( 30%)
+        pat = re.compile('(?P<name>\S+)\s+(?P<id>\d+)+\s+(?P<blksize>\d+\s*\S+)\s+(?P<data>\S+)\s+(?P<meta>\S+)\s+(?P<total_data>\d+)\s+(?P<free_data>\d+)\s+\\(\s*(?P<free_data_percent>\d+)%\\)\s+(?P<total_meta>\d+)\s+(?P<free_meta>\d+)\s+')
+        for one_fs in local_fs:
+            try:
+                for l in check_output(["/usr/lpp/mmfs/bin/mmlspool", one_fs],stderr=DEVNULL).decode().split('\n'):
+                    m = pat.match(l)
+                    if m:
+                        n = one_fs + " " + m['name']
+                        pool_stats[n] = m.groupdict()
+                        pool_stats[n]['type'] = pool_type[m['data']][m['meta']]
+                        pool_stats[n]['fs'] = one_fs
+            except:
+                pass
+    return (per_host, pool_stats)
 
-def get_prom_stats(stats):
+def get_prom_stats(all_stats):
+    stats, pools = all_stats
     all = []
+    sorted_hosts = sorted(stats.keys())
     for s in stat_mapping.keys():
         ss = stat_mapping[s]
         all.append("# HELP %s %s" %(ss['name'], ss['description']))
-        all.append("# TYPE %s counter" % ss['name'])
-        for h in sorted(stats.keys()):
+        all.append("# TYPE %s %s" % (ss['name'], ss['type']))
+        for h in sorted_hosts:
             for f in sorted(stats[h].keys()):
                 one = stats[h][f]
                 if s in one:
                     all.append('%s{fs="%s", host="%s"} %s %s' % (ss['name'], f, h, one[s], one['t_miliseconds']))
+    for s in pool_mapping.keys():
+        ss = pool_mapping[s]
+        all.append("# HELP %s %s" %(ss['name'], ss['description']))
+        all.append("# TYPE %s %s" % (ss['name'], ss['type']))
+        for pn, p in pools.items():
+            if s in p:
+                all.append('%s{fs="%s", pool_name="%s", pool_id="%s", pool_type="%s", block_size="%s"} %d' % (ss['name'], p['fs'], p['name'], p['id'], p['type'], p['blksize'], int(p[s])*1024))
     return all
 
-def print_prom_stats(stats):
-    for i in get_prom_stats(stats):
+def print_prom_stats():
+    for i in get_prom_stats(get_stats()):
         print(i)
 
 def get_systemd_socket():
@@ -151,4 +221,5 @@ if __name__ == "__main__":
         wait_loop()
         sys.exit()
     else:
-        raise SystemExit("This server should only run from systemd")
+        print("Running outside systemd - will output one data dump and exit.")
+        print_prom_stats()
