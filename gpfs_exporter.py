@@ -5,6 +5,7 @@ import time
 import socket
 import http.server
 import re
+import csv
 from subprocess import (PIPE, STDOUT, Popen, CalledProcessError, check_output)
 
 stat_mapping = {
@@ -85,6 +86,62 @@ pool_type = {
   }
 }
 
+# ('filesystemName', 'tiger2.gpfs'), ('quotaType', 'FILESET'), ('id', '5'), ('name', '5'), ('blockUsage', '1745619584'), ('blockQuota', '10737418240'), ('blockLimit', '10737418240'), ('blockInDoubt', '0'), ('blockGrace', 'none'), ('filesUsage', '3476'), ('filesQuota', '0'), ('filesLimit', '0'), ('filesInDoubt', '0'), ('filesGrace', 'none'), ('remarks', 'e'), ('quota', 'on'), ('defQuota', 'off'), ('fid', ''), ('filesetname', '')
+quota_mapping = {
+  'blockUsage': {
+    'name': 'gpfs_quota_block_usage_bytes',
+    'description': 'GPFS Block Quota Usage',
+    'type': 'gauge',
+    'multiply': 1024,
+  },
+  'blockQuota': {
+    'name': 'gpfs_quota_block_limit_soft_bytes',
+    'description': 'GPFS Block Quota Soft Limit',
+    'type': 'gauge',
+    'multiply': 1024,
+  },
+  'blockLimit': {
+    'name': 'gpfs_quota_block_limit_hard_bytes',
+    'description': 'GPFS Block Quota Hard Limit',
+    'type': 'gauge',
+    'multiply': 1024,
+  },
+  'blockInDoubt': {
+    'name': 'gpfs_quota_block_usage_in_doubt_bytes',
+    'description': 'GPFS Block Quota Usage In Doubt',
+    'type': 'gauge',
+    'multiply': 1024,
+  },
+  'filesUsage': {
+    'name': 'gpfs_quota_files_usage',
+    'description': 'GPFS Number Of Files Quota Usage',
+    'type': 'gauge',
+    'multiply': 1,
+  },
+  'filesQuota': {
+    'name': 'gpfs_quota_files_limit_soft',
+    'description': 'GPFS Number Of Files Quota Soft Limit',
+    'type': 'gauge',
+    'multiply': 1,
+  },
+  'filesLimit': {
+    'name': 'gpfs_quota_files_limit_hard',
+    'description': 'GPFS Number Of Files Quota Hard Limit',
+    'type': 'gauge',
+    'multiply': 1,
+  },
+  'filesInDoubt': {
+    'name': 'gpfs_quota_files_usage_in_doubt',
+    'description': 'GPFS Number Of Files Quota Usage In Doubt',
+    'type': 'gauge',
+    'multiply': 1,
+  },
+}
+quota_type = {
+  'USR': 'uid',
+  'GRP': 'gid',
+  'FILESET': 'fileset_id',
+}
 
 DEVNULL = open(os.devnull, 'w')
 
@@ -108,6 +165,10 @@ def get_stats():
         raise CalledProcessError(retcode, '/usr/lpp/mmfs/bin/mmpmon', output=all_stats)
     local_fs = []
     pool_stats = {}
+    # double deep dict with filesets['tiger2.gpfs'][1] = { 'name': 'CRYOEM', 'status': 'Linked', 'parent': 0, 'path'.... }
+    filesets = {}
+    # raw quotas
+    quotas = []
     for l in all_stats.decode().split('\n'):
         if l.startswith('_fs_io_s_'):
             # _fs_io_s_ _n_ 172.29.22.78 _nn_ tiger-i23g14-op0 _rc_ 0 _t_ 1536005985 _tu_ 350611 _cl_ tiger2.gpfs _fs_ tiger2.gpfs _d_ 32 _br_ 3401130516933 _bw_ 525742920053 _oc_ 14848149 _cc_ 10894911 _rdc_ 1776360 _wc_ 5527815 _dir_ 37573 _iu_ 11739978
@@ -132,6 +193,7 @@ def get_stats():
         pat = re.compile('(?P<name>\S+)\s+(?P<id>\d+)+\s+(?P<blksize>\d+\s*\S+)\s+(?P<data>\S+)\s+(?P<meta>\S+)\s+(?P<total_data>\d+)\s+(?P<free_data>\d+)\s+\\(\s*(?P<free_data_percent>\d+)%\\)\s+(?P<total_meta>\d+)\s+(?P<free_meta>\d+)\s+')
         for one_fs in local_fs:
             try:
+                # Collect pool usage
                 for l in check_output(["/usr/lpp/mmfs/bin/mmlspool", one_fs],stderr=DEVNULL).decode().split('\n'):
                     m = pat.match(l)
                     if m:
@@ -139,30 +201,59 @@ def get_stats():
                         pool_stats[n] = m.groupdict()
                         pool_stats[n]['type'] = pool_type[m['data']][m['meta']]
                         pool_stats[n]['fs'] = one_fs
+                # Next, get basic info on all filesets in this one_fs
+                filesets[one_fs] = {}
+                for l in csv.DictReader(check_output(["/usr/lpp/mmfs/bin/mmlsfileset", one_fs, '-Y'],stderr=DEVNULL).decode().split('\n'), delimiter=':'):
+                    filesets[one_fs][l['id']] = {
+                        'fs': l['filesystemName'],
+                        'name': l['filesetName'],
+                        'status': l['status'],
+                        'path': l['path'],
+                        'parentId': l['parentId'],
+                    }
+                # Finally, collect all quotas on this filesystem
+                for l in csv.DictReader(check_output(["/usr/lpp/mmfs/bin/mmrepquota", '-Y', '-n', one_fs],stderr=DEVNULL).decode().split('\n'), delimiter=':'):
+                    quotas.append(l)
             except:
                 pass
-    return (per_host, pool_stats)
+    return (per_host, pool_stats, filesets, quotas)
+
+def append_descriptions(all, ss):
+    all.append("# HELP %s %s" %(ss['name'], ss['description']))
+    all.append("# TYPE %s %s" % (ss['name'], ss['type']))
 
 def get_prom_stats(all_stats):
-    stats, pools = all_stats
+    stats, pools, filesets, quotas = all_stats
     all = []
     sorted_hosts = sorted(stats.keys())
-    for s in stat_mapping.keys():
-        ss = stat_mapping[s]
-        all.append("# HELP %s %s" %(ss['name'], ss['description']))
-        all.append("# TYPE %s %s" % (ss['name'], ss['type']))
+    for s,ss in stat_mapping.items():
+        append_descriptions(all, ss)
         for h in sorted_hosts:
             for f in sorted(stats[h].keys()):
                 one = stats[h][f]
                 if s in one:
                     all.append('%s{fs="%s", host="%s"} %s %s' % (ss['name'], f, h, one[s], one['t_miliseconds']))
-    for s in pool_mapping.keys():
+    for s,ss in pool_mapping.items():
         ss = pool_mapping[s]
-        all.append("# HELP %s %s" %(ss['name'], ss['description']))
-        all.append("# TYPE %s %s" % (ss['name'], ss['type']))
+        append_descriptions(all, ss)
         for pn, p in pools.items():
             if s in p:
                 all.append('%s{fs="%s", pool_name="%s", pool_id="%s", pool_type="%s", block_size="%s"} %d' % (ss['name'], p['fs'], p['name'], p['id'], p['type'], p['blksize'], int(p[s])*1024))
+    for s, ss in quota_mapping.items():
+        append_descriptions(all, ss)
+        for q in quotas:
+            # OrderedDict([('mmrepquota', 'mmrepquota'), ('', ''), ('HEADER', '0'), ('version', '1'), ('reserved', ''), ('filesystemName', 'tiger2.gpfs'), ('quotaType', 'USR'), ('id', '94970'), ('name', '94970'), ('blockUsage', '298887936'), ('blockQuota', '524288000'), ('blockLimit', '536870912'), ('blockInDoubt', '0'), ('blockGrace', 'none'), ('filesUsage', '149912'), ('filesQuota', '1990000'), ('filesLimit', '2000000'), ('filesInDoubt', '0'), ('filesGrace', 'none'), ('remarks', 'd_fset'), ('quota', 'on'), ('defQuota', 'on'), ('fid', '0'), ('filesetname', '0')])
+            # OrderedDict([('mmrepquota', 'mmrepquota'), ('', ''), ('HEADER', '0'), ('version', '1'), ('reserved', ''), ('filesystemName', 'tiger2.gpfs'), ('quotaType', 'GRP'), ('id', '30051'), ('name', '30051'), ('blockUsage', '418134272'), ('blockQuota', '0'), ('blockLimit', '0'), ('blockInDoubt', '0'), ('blockGrace', 'none'), ('filesUsage', '393'), ('filesQuota', '0'), ('filesLimit', '0'), ('filesInDoubt', '0'), ('filesGrace', 'none'), ('remarks', 'i'), ('quota', 'on'), ('defQuota', 'off'), ('fid', '0'), ('filesetname', '0')])
+            # OrderedDict([('mmrepquota', 'mmrepquota'), ('', ''), ('HEADER', '0'), ('version', '1'), ('reserved', ''), ('filesystemName', 'tiger2.gpfs'), ('quotaType', 'FILESET'), ('id', '5'), ('name', '5'), ('blockUsage', '1745619584'), ('blockQuota', '10737418240'), ('blockLimit', '10737418240'), ('blockInDoubt', '0'), ('blockGrace', 'none'), ('filesUsage', '3476'), ('filesQuota', '0'), ('filesLimit', '0'), ('filesInDoubt', '0'), ('filesGrace', 'none'), ('remarks', 'e'), ('quota', 'on'), ('defQuota', 'off'), ('fid', ''), ('filesetname', '')])
+            fs = q['filesystemName']
+            fid = q['fid']
+            if fid != '' and fs in filesets and fid in filesets[fs]:
+                filesetname = filesets[fs][fid]['name']
+            elif fid == '' and q['quotaType'] == 'FILESET' and fs in filesets and q['id'] in filesets[fs]:
+                filesetname = filesets[fs][q['id']]['name']
+            else:
+                filesetname = ''
+            all.append('%s{fs="%s", quota_type="%s", %s="%s", fid="%s", filesetname="%s", quota="%s", def_quota="%s", remarks="%s"} %d' % (ss['name'], fs, q['quotaType'], quota_type[q['quotaType']], q['id'], fid, filesetname, q['quota'], q['defQuota'], q['remarks'], int(q[s])*ss['multiply']))
     return all
 
 def print_prom_stats():
