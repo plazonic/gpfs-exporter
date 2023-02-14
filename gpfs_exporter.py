@@ -112,6 +112,12 @@ quota_mapping = {
     'type': 'gauge',
     'multiply': 1024,
   },
+  'blockGrace': {
+    'name': 'gpfs_quota_block_grace_in_seconds',
+    'description': 'GPFS Block Quota Grace In Seconds with 0=ok, 1=expired or seconds+1',
+    'type': 'gauge',
+    'multiply': 'grace',
+  },
   'filesUsage': {
     'name': 'gpfs_quota_files_usage',
     'description': 'GPFS Number Of Files Quota Usage',
@@ -135,6 +141,12 @@ quota_mapping = {
     'description': 'GPFS Number Of Files Quota Usage In Doubt',
     'type': 'gauge',
     'multiply': 1,
+  },
+  'filesGrace': {
+    'name': 'gpfs_quota_files_grace_in_seconds',
+    'description': 'GPFS Number Of Files Grace In Seconds with 0=ok, 1=expired or seconds=1',
+    'type': 'gauge',
+    'multiply': 'grace',
   },
 }
 quota_type = {
@@ -222,6 +234,26 @@ def append_descriptions(all, ss):
     all.append("# HELP %s %s" %(ss['name'], ss['description']))
     all.append("# TYPE %s %s" % (ss['name'], ss['type']))
 
+def real_value(val, multiply):
+    if multiply == 'grace':
+        if val == 'none':
+            return 0
+        elif val == 'expired':
+            return 1
+        elif 'day' in val:
+            return 86400 * int(val.split(' ')[0]) + 1
+        elif 'hour' in val:
+            return 3600 * int(val.split(' ')[0]) + 1
+        elif 'minute' in val:
+            return 60 * int(val.split(' ')[0]) + 1
+        elif 'second' in val:
+            return int(val.split(' ')[0]) + 1
+        else:
+            print("ERROR: Got unknown grace=%s" % val, file=sys.stderr)
+            return 1
+    else:
+        return int(val)*multiply
+
 def get_prom_stats(all_stats):
     stats, pools, filesets, quotas = all_stats
     all = []
@@ -253,7 +285,7 @@ def get_prom_stats(all_stats):
                 filesetname = filesets[fs][q['id']]['name']
             else:
                 filesetname = ''
-            all.append('%s{fs="%s", quota_type="%s", %s="%s", fid="%s", filesetname="%s", quota="%s", def_quota="%s", remarks="%s"} %d' % (ss['name'], fs, q['quotaType'], quota_type[q['quotaType']], q['id'], fid, filesetname, q['quota'], q['defQuota'], q['remarks'], int(q[s])*ss['multiply']))
+            all.append('%s{fs="%s", quota_type="%s", %s="%s", fid="%s", filesetname="%s", quota="%s", def_quota="%s", remarks="%s"} %d' % (ss['name'], fs, q['quotaType'], quota_type[q['quotaType']], q['id'], fid, filesetname, q['quota'], q['defQuota'], q['remarks'], real_value(q[s],ss['multiply'])))
     return all
 
 def print_prom_stats():
