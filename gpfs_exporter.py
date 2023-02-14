@@ -144,7 +144,7 @@ quota_mapping = {
   },
   'filesGrace': {
     'name': 'gpfs_quota_files_grace_in_seconds',
-    'description': 'GPFS Number Of Files Grace In Seconds with 0=ok, 1=expired or seconds=1',
+    'description': 'GPFS Number Of Files Grace In Seconds with 0=ok, 1=expired or seconds+1',
     'type': 'gauge',
     'multiply': 'grace',
   },
