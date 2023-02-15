@@ -237,9 +237,9 @@ def append_descriptions(all, ss):
 def real_value(val, multiply):
     if multiply == 'grace':
         if val == 'none':
-            return 0
-        elif val == 'expired':
             return 1
+        elif val == 'expired':
+            return 0
         elif 'day' in val:
             return 86400 * int(val.split(' ')[0]) + 1
         elif 'hour' in val:
