@@ -114,7 +114,7 @@ quota_mapping = {
   },
   'blockGrace': {
     'name': 'gpfs_quota_block_grace_in_seconds',
-    'description': 'GPFS Block Quota Grace In Seconds with 0=ok, 1=expired or seconds+1',
+    'description': 'GPFS Block Quota Grace In Seconds with 0=expired,1=ok or seconds+1',
     'type': 'gauge',
     'multiply': 'grace',
   },
@@ -144,7 +144,7 @@ quota_mapping = {
   },
   'filesGrace': {
     'name': 'gpfs_quota_files_grace_in_seconds',
-    'description': 'GPFS Number Of Files Grace In Seconds with 0=ok, 1=expired or seconds+1',
+    'description': 'GPFS Number Of Files Grace In Seconds with 0=expired, 1=ok or seconds+1',
     'type': 'gauge',
     'multiply': 'grace',
   },
