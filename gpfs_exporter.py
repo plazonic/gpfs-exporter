@@ -285,7 +285,7 @@ def get_prom_stats(all_stats):
                 filesetname = filesets[fs][q['id']]['name']
             else:
                 filesetname = ''
-            all.append('%s{fs="%s", quota_type="%s", %s="%s", fid="%s", filesetname="%s", quota="%s", def_quota="%s", remarks="%s"} %d' % (ss['name'], fs, q['quotaType'], quota_type[q['quotaType']], q['id'], fid, filesetname, q['quota'], q['defQuota'], q['remarks'], real_value(q[s],ss['multiply'])))
+            all.append('%s{fs="%s", quota_type="%s", %s="%s", fid="%s", filesetname="%s", quota="%s", def_quota="%s", remarks="%s"} %d' % (ss['name'], fs, q['quotaType'], quota_type[q['quotaType']], q['id'], fid, filesetname, q['quota'], q['defQuota'], q['remarks'], real_value(q[s].strip(),ss['multiply'])))
     return all
 
 def print_prom_stats():
