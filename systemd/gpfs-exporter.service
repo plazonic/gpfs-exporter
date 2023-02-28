@@ -1,0 +1,11 @@
+[Unit]
+Description=GPFS Exporter for Prometheus Service
+Requires=gpfs-exporter.socket
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/gpfs_exporter.py
+TimeoutSec=30
+
+[Install]
+WantedBy=multi-user.target

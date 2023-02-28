@@ -1,0 +1,12 @@
+[Unit]
+Description=GPFS Exporter Socket
+
+[Socket]
+ListenStream=0.0.0.0:9001
+KeepAlive=true
+KeepAliveTimeSec=30
+KeepAliveIntervalSec=10
+KeepAliveProbes=4
+
+[Install]
+WantedBy=sockets.target
