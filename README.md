@@ -67,5 +67,21 @@ It is designed to run under systemd via gpfs-exporter socket and unit service, f
 
 For debugging purposes run it directly. It will output on the stdout and exit immediately.
 
+# Basic Prometheus Configuration
+For example, with cluster called speedy:
+```
+---
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+scrape_configs:
+- job_name: Speedy GPFS
+  static_configs:
+  - targets:
+    - speedy-member:9001
+    labels:
+      cluster: speedy
+      service: gpfs
+```
 # Grafana dashboard
 You can find the dashboard used at Princeton University in the grafana subdirectory. It has two static variables that are used for easy filtering. One with the list of compute clusters (we add cluster label at collection time) and the other with gpfs filesystem names.
