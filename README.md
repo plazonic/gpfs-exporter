@@ -75,6 +75,15 @@ global:
   scrape_interval: 15s
   evaluation_interval: 15s
 scrape_configs:
+- job_name: prometheus
+  scrape_interval: 10s
+  scrape_timeout: 10s
+  metrics_path: "/prometheus/metrics"
+  static_configs:
+  - targets:
+    - localhost:9090
+    labels:
+      alias: Prometheus
 - job_name: Speedy GPFS
   static_configs:
   - targets:
