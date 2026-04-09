@@ -155,6 +155,25 @@ quota_type = {
   'FILESET': 'fileset_id',
 }
 
+# independent fileset stats
+ind_filesets = {
+  'maxInodes': {
+    'name': 'gpfs_independent_fileset_max_inodes',
+    'description': 'GPFS Maximum Inodes in an independent fileset',
+    'type': 'gauge',
+  },
+  'allocInodes': {
+    'name': 'gpfs_independent_fileset_allocated_inodes',
+    'description': 'GPFS Allocated Inodes in an Independent Fileset',
+    'type': 'gauge',
+  },
+  'freeInodes': {
+    'name': 'gpfs_independent_fileset_free_inodes',
+    'description': 'GPFS Free Inodes in an Independent Fileset',
+    'type': 'gauge',
+  },
+}
+
 DEVNULL = open(os.devnull, 'w')
 
 def get_stats():
@@ -222,6 +241,11 @@ def get_stats():
                         'status': l['status'],
                         'path': l['path'],
                         'parentId': l['parentId'],
+                        # The following is relevant for independent filesets
+                        # collect it for later use if we find out quotas are turned off and we will use this instead
+                        'maxInodes': l['maxInodes'],
+                        'allocInodes': l['allocInodes'],
+                        'freeInodes': l['freeInodes'],
                     }
                 # Finally, collect all quotas on this filesystem
                 for l in csv.DictReader(check_output(["/usr/lpp/mmfs/bin/mmrepquota", '-Y', '-n', one_fs],stderr=DEVNULL).decode().split('\n'), delimiter=':'):
@@ -286,6 +310,12 @@ def get_prom_stats(all_stats):
             else:
                 filesetname = ''
             all.append('%s{fs="%s", quota_type="%s", %s="%s", fid="%s", filesetname="%s", quota="%s", def_quota="%s", remarks="%s"} %d' % (ss['name'], fs, q['quotaType'], quota_type[q['quotaType']], q['id'], fid, filesetname, q['quota'], q['defQuota'], q['remarks'], real_value(q[s].strip(),ss['multiply'])))
+    for s, ss in ind_filesets.items():
+        append_descriptions(all, ss)
+        for fs in filesets:
+            for fid, f in filesets[fs].items():
+                if f[s] != '' and f[s] != '0':
+                    all.append('%s{fs="%s",fileset_id="%s",filesetname="%s",parent_id="%s"} %s' % (ss['name'], fs, fid, f['name'], f['parentId'], f[s]))
     return all
 
 def print_prom_stats():
@@ -301,7 +331,7 @@ def get_systemd_socket():
 class RequestHandler(http.server.BaseHTTPRequestHandler):
     def _set_headers(self):
         self.send_response(200)
-        self.send_header('Content-type', 'text/plain')
+        self.send_header('Content-type', 'text/plain; version=0.0.4; charset=utf-8')
         self.end_headers()
 
     def do_HEAD(self):
